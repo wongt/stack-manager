@@ -108,7 +108,12 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
   up)
     [[ -f ".stackrc" ]] && set +u && . ".stackrc" && set -u
-    [[ -f "$ENV_FILE" ]] && info "Loaded .env"
+    if [[ -f "$ENV_FILE" ]]; then
+        set -a
+        . "$ENV_FILE"
+        set +a
+        info "Loaded .env"
+    fi
     use_context
     require_swarm
     name="$(stack_name)"
