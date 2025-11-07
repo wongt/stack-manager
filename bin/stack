@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.2.0"
+VERSION="0.2.3"
 
-# ---------- Default configuration ----------
+# ---------- Defaults ----------
 COMPOSE_FILES=("docker-compose.yml")
 ENV_FILE=".env"
-STACK_NAME_DEFAULT="${APP:-}"
-DETACH="false"
-WAIT_TIMEOUT=300
+
+# Default stack name = folder name, overridden by APP in .stackrc/.env
+STACK_NAME_DEFAULT="${APP:-$(basename "$(pwd)")}"
+
+DETACH="${DETACH:-false}"
+WAIT_TIMEOUT="${WAIT_TIMEOUT:-300}"
 CONTEXT="${DOCKER_CONTEXT:-}"
 
 # ---------- Helpers ----------
@@ -17,7 +20,7 @@ info(){ echo "➤ $*"; }
 ok(){ echo "✅ $*"; }
 
 compose_args() {
-  local args=()
+  args=()
   for f in "${COMPOSE_FILES[@]}"; do
     [[ -f "$f" ]] || die "Compose file not found: $f"
     args+=(-c "$f")
@@ -26,10 +29,14 @@ compose_args() {
 }
 
 stack_name() {
-  local name="${STACK_NAME_DEFAULT}"
-  [[ -z "${name:-}" && -f "$ENV_FILE" ]] && set +u && . "$ENV_FILE" && set -u && name="${APP:-}"
-  [[ -z "${name:-}" && -f ".stackrc" ]] && set +u && . ".stackrc" && set -u && name="${APP:-}"
-  [[ -z "${name:-}" ]] && die "No stack name set. Add APP= in .stackrc or .env."
+  name="${STACK_NAME_DEFAULT}"
+
+  # Load from .stackrc first (priority 1)
+  [[ -f ".stackrc" ]] && set +u && . ".stackrc" && set -u && name="${APP:-$name}"
+
+  # Load from .env second (priority 2)
+  [[ -f "$ENV_FILE" ]] && set +u && . "$ENV_FILE" && set -u && name="${APP:-$name}"
+
   printf "%s" "$name"
 }
 
@@ -38,17 +45,26 @@ require_swarm() {
     || die "Docker Swarm inactive on this node. Run: docker swarm init"
 }
 
+use_context() {
+  if [[ -n "$CONTEXT" ]]; then
+    info "Using docker context: $CONTEXT"
+    docker context use "$CONTEXT" >/dev/null
+  fi
+}
+
 wait_ready() {
-  local stack="$1" deadline=$(( $(date +%s) + WAIT_TIMEOUT ))
+  stack="$1"
+  deadline=$(( $(date +%s) + WAIT_TIMEOUT ))
   info "Waiting for stack '$stack' to become ready (timeout: ${WAIT_TIMEOUT}s)…"
   while true; do
-    local states total running
     mapfile -t states < <(docker stack ps "$stack" --no-trunc --format '{{.CurrentState}}' 2>/dev/null || true)
     total=${#states[@]}
-    (( total == 0 )) && sleep 1 && [[ $(date +%s) -lt $deadline ]] && continue
+    if (( total == 0 )); then
+      [[ $(date +%s) -lt $deadline ]] && sleep 1 && continue || die "No tasks yet for $stack."
+    fi
     running=0
     for s in "${states[@]}"; do [[ "$s" =~ ^Running\ |^Complete\  ]] && ((running++)); done
-    (( running == total )) && ok "All $total tasks are running/complete." && return 0
+    if (( running == total )); then ok "All $total tasks running/complete."; return 0; fi
     [[ $(date +%s) -ge $deadline ]] && die "Timed out waiting for stack readiness."
     sleep 2
   done
@@ -92,9 +108,10 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
   up)
     [[ -f ".stackrc" ]] && set +u && . ".stackrc" && set -u
-    [[ -f "$ENV_FILE" ]] && info "Loaded $ENV_FILE"
+    [[ -f "$ENV_FILE" ]] && info "Loaded .env"
+    use_context
     require_swarm
-    local name; name="$(stack_name)"
+    name="$(stack_name)"
     info "Deploying stack '$name'"
     # shellcheck disable=SC2046
     docker stack deploy $(compose_args) --with-registry-auth --prune --detach="$DETACH" "$name"
@@ -102,32 +119,38 @@ case "$cmd" in
     ok "Deployed $name"
     ;;
   down|rm)
-    local name; name="$(stack_name)"
+    use_context
+    name="$(stack_name)"
     info "Removing stack '$name'"
     docker stack rm "$name" || true
-    ok "Removed $name"
+    ok "Remove requested for $name"
     ;;
   ps)
-    local name; name="$(stack_name)"
+    use_context
+    name="$(stack_name)"
     docker stack services "$name"
     echo
     docker stack ps "$name" --no-trunc
     ;;
   logs)
-    local name; name="$(stack_name)"
+    use_context
+    name="$(stack_name)"
     docker service ls --format '{{.Name}}' | grep -E "^${name}_" | xargs -r docker service logs -f --since=10m
     ;;
   redeploy)
-    local name; name="$(stack_name)"
+    use_context
+    name="$(stack_name)"
     docker service ls --format '{{.Name}}' | grep -E "^${name}_" | while read -r svc; do
       docker service update --force --label-add "redeploy-ts=$(date +%s)" "$svc"
     done
     ;;
   wait)
-    local name; name="$(stack_name)"
+    use_context
+    name="$(stack_name)"
     wait_ready "$name"
     ;;
   prune)
+    use_context
     docker system prune -f
     ;;
   "")
