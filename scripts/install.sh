@@ -4,8 +4,8 @@ set -euo pipefail
 # ---- Config (can be set via env) ----
 DEST="${DEST:-/usr/local/bin}"
 FORCE="${FORCE:-no}"
-REPO="${REPO:-}"       # e.g. wongt/stack-manager
-BRANCH="${BRANCH:-}"   # e.g. main or develop
+REPO="${REPO:-wongt/stack-manager}"       # e.g. wongt/stack-manager
+BRANCH="${BRANCH:-main}"   # e.g. main or develop
 RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com}"
 
 die(){ echo "❌ $*" >&2; exit 1; }
